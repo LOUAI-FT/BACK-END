@@ -1,0 +1,140 @@
+import { Hono } from 'hono';
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcrypt';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+
+const app = new Hono();
+const prisma = new PrismaClient();
+const upload = multer({ dest: 'uploads/' }); // Save files in the uploads folder
+const port = 3000;
+
+// Middleware to set Content-Type as JSON
+app.use('*', (c, next) => {
+  c.header('Content-Type', 'application/json');
+  return next();
+});
+
+// Register: Add a new user with password hashing
+app.post('/register', async (c) => {
+  try {
+    const { email, password } = await c.req.json(); // Receive email and password
+
+    // Check if the user already exists
+    const existingUser = await prisma.user.findUnique({
+      where: { email },
+    });
+    if (existingUser) {
+      return c.json({ message: 'Email already exists' }, 400);
+    }
+
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Save the user in the database
+    const newUser = await prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+      },
+    });
+
+    return c.json({ message: 'User registered successfully!', user: newUser }, 201);
+  } catch (err) {
+    return c.json({ message: err.message }, 500);
+  }
+});
+
+// Login: Verify email and password
+app.post('/login', async (c) => {
+  try {
+    const { email, password } = await c.req.json(); // Receive email and password
+
+    // Check if the user exists
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      return c.json({ message: 'Invalid email or password' }, 400);
+    }
+
+    // Compare the entered password with the hashed password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return c.json({ message: 'Invalid email or password' }, 400);
+    }
+
+    return c.json({ message: 'Login successful!', user: { email: user.email } }, 200);
+  } catch (err) {
+    return c.json({ message: err.message }, 500);
+  }
+});
+
+// Upload image to the server and store the path in the database
+app.post('/upload', upload.single('image'), async (c) => {
+  try {
+    const { email } = await c.req.json(); // Extract email or other info
+
+    // The path to store in the database
+    const imagePath = path.join('uploads', c.req.file.filename);
+
+    // Store the image path in the database
+    const newImage = await prisma.image.create({
+      data: {
+        email,
+        path: imagePath, // Store only the path
+      },
+    });
+
+    return c.json({ message: 'Image uploaded successfully!', data: newImage }, 201);
+  } catch (err) {
+    return c.json({ message: err.message }, 500);
+  }
+});
+
+// Get all images stored in the database
+app.get('/images', async (c) => {
+  try {
+    const images = await prisma.image.findMany();
+
+    if (images.length === 0) {
+      return c.json({ message: 'No images stored.' }, 404);
+    }
+
+    return c.json({ images }, 200);
+  } catch (err) {
+    return c.json({ message: err.message }, 500);
+  }
+});
+
+// Get a specific image by ID
+app.get('/image/:id', async (c) => {
+  try {
+    const { id } = c.req.param(); // Get the ID from the URL
+
+    const image = await prisma.image.findUnique({
+      where: { id: parseInt(id) },
+    });
+
+    if (!image) {
+      return c.json({ message: 'Image not found' }, 404);
+    }
+
+    const imagePath = path.join(__dirname, image.path);
+    if (fs.existsSync(imagePath)) {
+      c.header('Content-Type', 'image/jpeg');
+      return c.body(fs.createReadStream(imagePath));
+    } else {
+      return c.json({ message: 'Image not found at the specified path' }, 404);
+    }
+  } catch (err) {
+    return c.json({ message: err.message }, 500);
+  }
+});
+
+// Start the server
+app.fire().then(() => {
+  console.log(`Server started on port ${port}`);
+});
